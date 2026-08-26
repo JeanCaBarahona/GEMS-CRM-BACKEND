@@ -11,6 +11,8 @@ const ActivitySchema = new mongoose.Schema({
     default: 'pending' 
   },
   clientId: { type: mongoose.Schema.Types.ObjectId, ref: 'Client' },
+  // Proyecto del cliente en el que se trabajó (subdocumento de Client.projects)
+  projectId: { type: mongoose.Schema.Types.ObjectId, default: null, index: true },
   assignedTo: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }], // Referencia a múltiples miembros del equipo
   priority: { 
     type: String, 

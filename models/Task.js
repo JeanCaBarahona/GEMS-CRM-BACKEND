@@ -187,6 +187,13 @@ const TaskSchema = new mongoose.Schema({
     default: null
   },
   
+  // Proyecto del cliente en el que se trabaja (subdocumento de Client.projects)
+  projectId: {
+    type: mongoose.Schema.Types.ObjectId,
+    default: null,
+    index: true
+  },
+  
   // Comentarios y actividad
   comments: [{
     userId: {

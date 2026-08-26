@@ -122,6 +122,70 @@ router.delete('/:id/services/:serviceId', async (req, res) => {
   res.json({ success: true });
 });
 
+// ── Projects ──
+router.get('/:id/projects', async (req, res) => {
+  const client = await loadOwnedClient(req, res); if (!client) return;
+  res.json(client.projects || []);
+});
+
+router.post('/:id/projects', async (req, res) => {
+  const client = await loadOwnedClient(req, res); if (!client) return;
+  const name = (req.body?.name || '').trim();
+  if (!name) return res.status(400).json({ message: 'El nombre del proyecto es obligatorio' });
+  const dup = (client.projects || []).some(p => p.name.trim().toLowerCase() === name.toLowerCase());
+  if (dup) return res.status(409).json({ message: 'Ya existe un proyecto con ese nombre' });
+  client.projects.push({ ...req.body, name });
+  await client.save();
+  res.status(201).json(client.projects[client.projects.length - 1]);
+});
+
+router.put('/:id/projects/:projectId', async (req, res) => {
+  const client = await loadOwnedClient(req, res); if (!client) return;
+  const project = client.projects.id(req.params.projectId);
+  if (!project) return res.status(404).json({ message: 'Project not found' });
+  const { isDefault, ...rest } = req.body || {};
+  if (rest.name !== undefined) {
+    const name = (rest.name || '').trim();
+    if (!name) return res.status(400).json({ message: 'El nombre del proyecto es obligatorio' });
+    const dup = (client.projects || []).some(
+      p => String(p._id) !== String(project._id) && p.name.trim().toLowerCase() === name.toLowerCase()
+    );
+    if (dup) return res.status(409).json({ message: 'Ya existe un proyecto con ese nombre' });
+    rest.name = name;
+  }
+  Object.assign(project, rest);
+  await client.save();
+  res.json(project);
+});
+
+router.delete('/:id/projects/:projectId', async (req, res) => {
+  const client = await loadOwnedClient(req, res); if (!client) return;
+  const project = client.projects.id(req.params.projectId);
+  if (!project) return res.status(404).json({ message: 'Project not found' });
+  if (project.isDefault) {
+    return res.status(400).json({ message: 'El proyecto por defecto no se puede eliminar' });
+  }
+  // No se borra si tiene trabajo asociado: se archiva para no dejar tareas huérfanas.
+  const Task = require('../models/Task');
+  const Activity = require('../models/Activity');
+  const [tasks, activities] = await Promise.all([
+    Task.countDocuments({ organizationId: req.organizationId, projectId: project._id }),
+    Activity.countDocuments({ organizationId: req.organizationId, projectId: project._id })
+  ]);
+  if (tasks + activities > 0) {
+    project.status = 'archived';
+    await client.save();
+    return res.json({
+      success: true,
+      archived: true,
+      message: `El proyecto tiene ${tasks} tarea(s) y ${activities} actividad(es) asociadas, así que se archivó en lugar de eliminarse.`
+    });
+  }
+  project.deleteOne();
+  await client.save();
+  res.json({ success: true, archived: false });
+});
+
 // Commitments
 router.post('/:id/commitments', async (req, res) => {
   const client = await loadOwnedClient(req, res); if (!client) return;

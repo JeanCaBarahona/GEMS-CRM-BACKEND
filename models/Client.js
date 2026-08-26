@@ -49,6 +49,20 @@ const CustomFieldSchema = new mongoose.Schema(
   { _id: true }
 );
 
+const ProjectSchema = new mongoose.Schema(
+  {
+    name: { type: String, required: true, trim: true },
+    description: String,
+    status: { type: String, enum: ['active', 'paused', 'completed', 'archived'], default: 'active' },
+    color: { type: String, default: '' },
+    startDate: Date,
+    endDate: Date,
+    // Marca el proyecto contenedor por defecto; no se puede eliminar desde la UI.
+    isDefault: { type: Boolean, default: false }
+  },
+  { timestamps: true }
+);
+
 const ClientSchema = new mongoose.Schema(
   {
     organizationId: { type: mongoose.Schema.Types.ObjectId, ref: 'Organization', required: true, index: true },
@@ -72,6 +86,7 @@ const ClientSchema = new mongoose.Schema(
       }
     },
     services: [ServiceSchema],
+    projects: [ProjectSchema],
     preferences: [PreferenceSchema],
     commitments: [CommitmentSchema],
     notes: [NoteSchema],
