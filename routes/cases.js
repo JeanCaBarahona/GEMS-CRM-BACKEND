@@ -559,4 +559,130 @@ router.delete('/:id/tickets/:ticketId', async (req, res) => {
   }
 });
 
+// ── Vinculación con tareas ──
+router.post('/:id/tasks', async (req, res) => {
+  try {
+    const { taskId } = req.body;
+    if (!taskId) return res.status(400).json({ error: 'taskId es requerido' });
+    const case_item = await Case.findOneAndUpdate(
+      { _id: req.params.id, organizationId: req.organizationId },
+      { $addToSet: { linkedTasks: taskId } },
+      { new: true }
+    ).populate('linkedTasks', 'title status boardStatus priority');
+    if (!case_item) return res.status(404).json({ error: 'Caso no encontrado' });
+    res.json(case_item);
+  } catch (error) {
+    res.status(400).json({ error: 'Error al vincular tarea' });
+  }
+});
+
+router.delete('/:id/tasks/:taskId', async (req, res) => {
+  try {
+    const case_item = await Case.findOneAndUpdate(
+      { _id: req.params.id, organizationId: req.organizationId },
+      { $pull: { linkedTasks: req.params.taskId } },
+      { new: true }
+    ).populate('linkedTasks', 'title status boardStatus priority');
+    if (!case_item) return res.status(404).json({ error: 'Caso no encontrado' });
+    res.json(case_item);
+  } catch (error) {
+    res.status(400).json({ error: 'Error al desvincular tarea' });
+  }
+});
+
+// ── Vinculación con actividades ──
+router.post('/:id/activities', async (req, res) => {
+  try {
+    const { activityId } = req.body;
+    if (!activityId) return res.status(400).json({ error: 'activityId es requerido' });
+    const case_item = await Case.findOneAndUpdate(
+      { _id: req.params.id, organizationId: req.organizationId },
+      { $addToSet: { linkedActivities: activityId } },
+      { new: true }
+    ).populate('linkedActivities', 'title status priority');
+    if (!case_item) return res.status(404).json({ error: 'Caso no encontrado' });
+    res.json(case_item);
+  } catch (error) {
+    res.status(400).json({ error: 'Error al vincular actividad' });
+  }
+});
+
+router.delete('/:id/activities/:activityId', async (req, res) => {
+  try {
+    const case_item = await Case.findOneAndUpdate(
+      { _id: req.params.id, organizationId: req.organizationId },
+      { $pull: { linkedActivities: req.params.activityId } },
+      { new: true }
+    ).populate('linkedActivities', 'title status priority');
+    if (!case_item) return res.status(404).json({ error: 'Caso no encontrado' });
+    res.json(case_item);
+  } catch (error) {
+    res.status(400).json({ error: 'Error al desvincular actividad' });
+  }
+});
+
+// ── Enlaces externos (Google Drive, OneDrive, etc. — sin subir archivo) ──
+router.post('/:id/links', async (req, res) => {
+  try {
+    const { nombre, url } = req.body;
+    if (!nombre || !url) return res.status(400).json({ error: 'nombre y url son requeridos' });
+    const case_item = await Case.findOneAndUpdate(
+      { _id: req.params.id, organizationId: req.organizationId },
+      { $push: { enlacesExternos: { nombre, url, agregadoPor: req.userId, fecha: new Date() } } },
+      { new: true }
+    );
+    if (!case_item) return res.status(404).json({ error: 'Caso no encontrado' });
+    res.status(201).json(case_item.enlacesExternos[case_item.enlacesExternos.length - 1]);
+  } catch (error) {
+    res.status(400).json({ error: 'Error al agregar el enlace' });
+  }
+});
+
+router.delete('/:id/links/:linkId', async (req, res) => {
+  try {
+    const case_item = await Case.findOneAndUpdate(
+      { _id: req.params.id, organizationId: req.organizationId },
+      { $pull: { enlacesExternos: { _id: req.params.linkId } } },
+      { new: true }
+    );
+    if (!case_item) return res.status(404).json({ error: 'Caso no encontrado' });
+    res.json({ success: true });
+  } catch (error) {
+    res.status(400).json({ error: 'Error al eliminar el enlace' });
+  }
+});
+
+// ── Hoja de cálculo embebida ──
+// Límite de payload propio: el global de la API es 2MB (index.js), insuficiente
+// para un snapshot de Univer con estilos y fórmulas aplicados.
+const spreadsheetBodyParser = express.json({ limit: '10mb' });
+
+router.get('/:id/spreadsheet', async (req, res) => {
+  try {
+    const case_item = await Case.findOne(
+      { _id: req.params.id, organizationId: req.organizationId },
+      'spreadsheet'
+    );
+    if (!case_item) return res.status(404).json({ error: 'Caso no encontrado' });
+    res.json({ spreadsheet: case_item.spreadsheet || null });
+  } catch (error) {
+    res.status(500).json({ error: 'Error al obtener la hoja de cálculo' });
+  }
+});
+
+router.patch('/:id/spreadsheet', spreadsheetBodyParser, async (req, res) => {
+  try {
+    const { snapshot } = req.body;
+    const case_item = await Case.findOneAndUpdate(
+      { _id: req.params.id, organizationId: req.organizationId },
+      { spreadsheet: snapshot ?? null },
+      { new: true, select: '_id updatedAt' }
+    );
+    if (!case_item) return res.status(404).json({ error: 'Caso no encontrado' });
+    res.json({ success: true, updatedAt: case_item.updatedAt });
+  } catch (error) {
+    res.status(400).json({ error: 'Error al guardar la hoja de cálculo' });
+  }
+});
+
 module.exports = router;

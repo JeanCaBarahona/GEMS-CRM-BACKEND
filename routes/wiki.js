@@ -24,7 +24,9 @@ const upload = multer({ storage: storage });
 router.get('/', async (req, res) => {
   try {
     const { categoria, search } = req.query;
-    let query = {};
+    // Bug de multi-tenancy: antes esta ruta no filtraba por organización y
+    // devolvía artículos de wiki de TODAS las organizaciones.
+    let query = { organizationId: req.organizationId };
     if (categoria) query.categoria = categoria;
     if (search) {
       query.$or = [
@@ -103,7 +105,11 @@ router.put('/:id', upload.array('archivos', 5), async (req, res) => {
       updateData.archivos = [...(article.archivos || []), ...newFiles];
     }
 
-    const updatedArticle = await Wiki.findByIdAndUpdate(req.params.id, updateData, { new: true });
+    const updatedArticle = await Wiki.findOneAndUpdate(
+      { _id: req.params.id, organizationId: req.organizationId },
+      updateData,
+      { new: true }
+    );
     res.json(updatedArticle);
   } catch (err) {
     console.error('Error en PUT /api/wiki:', err);
@@ -157,6 +163,132 @@ router.delete('/:id/tickets/:ticketId', async (req, res) => {
       .populate('linkedTickets');
       
     res.json(populated);
+  } catch (err) {
+    res.status(400).json({ message: err.message });
+  }
+});
+
+// ── Vinculación con tareas ──
+router.post('/:id/tasks', async (req, res) => {
+  try {
+    const { taskId } = req.body;
+    if (!taskId) return res.status(400).json({ message: 'taskId es requerido' });
+    const wiki = await Wiki.findOneAndUpdate(
+      { _id: req.params.id, organizationId: req.organizationId },
+      { $addToSet: { linkedTasks: taskId } },
+      { new: true }
+    ).populate('linkedTasks', 'title status boardStatus priority');
+    if (!wiki) return res.status(404).json({ message: 'Artículo no encontrado' });
+    res.json(wiki);
+  } catch (err) {
+    res.status(400).json({ message: err.message });
+  }
+});
+
+router.delete('/:id/tasks/:taskId', async (req, res) => {
+  try {
+    const wiki = await Wiki.findOneAndUpdate(
+      { _id: req.params.id, organizationId: req.organizationId },
+      { $pull: { linkedTasks: req.params.taskId } },
+      { new: true }
+    ).populate('linkedTasks', 'title status boardStatus priority');
+    if (!wiki) return res.status(404).json({ message: 'Artículo no encontrado' });
+    res.json(wiki);
+  } catch (err) {
+    res.status(400).json({ message: err.message });
+  }
+});
+
+// ── Vinculación con actividades ──
+router.post('/:id/activities', async (req, res) => {
+  try {
+    const { activityId } = req.body;
+    if (!activityId) return res.status(400).json({ message: 'activityId es requerido' });
+    const wiki = await Wiki.findOneAndUpdate(
+      { _id: req.params.id, organizationId: req.organizationId },
+      { $addToSet: { linkedActivities: activityId } },
+      { new: true }
+    ).populate('linkedActivities', 'title status priority');
+    if (!wiki) return res.status(404).json({ message: 'Artículo no encontrado' });
+    res.json(wiki);
+  } catch (err) {
+    res.status(400).json({ message: err.message });
+  }
+});
+
+router.delete('/:id/activities/:activityId', async (req, res) => {
+  try {
+    const wiki = await Wiki.findOneAndUpdate(
+      { _id: req.params.id, organizationId: req.organizationId },
+      { $pull: { linkedActivities: req.params.activityId } },
+      { new: true }
+    ).populate('linkedActivities', 'title status priority');
+    if (!wiki) return res.status(404).json({ message: 'Artículo no encontrado' });
+    res.json(wiki);
+  } catch (err) {
+    res.status(400).json({ message: err.message });
+  }
+});
+
+// ── Enlaces externos (Google Drive, OneDrive, etc. — sin subir archivo) ──
+router.post('/:id/links', async (req, res) => {
+  try {
+    const { nombre, url } = req.body;
+    if (!nombre || !url) return res.status(400).json({ message: 'nombre y url son requeridos' });
+    const wiki = await Wiki.findOneAndUpdate(
+      { _id: req.params.id, organizationId: req.organizationId },
+      { $push: { enlacesExternos: { nombre, url, agregadoPor: req.userId, fecha: new Date() } } },
+      { new: true }
+    );
+    if (!wiki) return res.status(404).json({ message: 'Artículo no encontrado' });
+    res.status(201).json(wiki.enlacesExternos[wiki.enlacesExternos.length - 1]);
+  } catch (err) {
+    res.status(400).json({ message: err.message });
+  }
+});
+
+router.delete('/:id/links/:linkId', async (req, res) => {
+  try {
+    const wiki = await Wiki.findOneAndUpdate(
+      { _id: req.params.id, organizationId: req.organizationId },
+      { $pull: { enlacesExternos: { _id: req.params.linkId } } },
+      { new: true }
+    );
+    if (!wiki) return res.status(404).json({ message: 'Artículo no encontrado' });
+    res.json({ success: true });
+  } catch (err) {
+    res.status(400).json({ message: err.message });
+  }
+});
+
+// ── Hoja de cálculo embebida ──
+// Límite de payload propio: el global de la API es 2MB (index.js), insuficiente
+// para un snapshot de Univer con estilos y fórmulas aplicados.
+const spreadsheetBodyParser = express.json({ limit: '10mb' });
+
+router.get('/:id/spreadsheet', async (req, res) => {
+  try {
+    const wiki = await Wiki.findOne(
+      { _id: req.params.id, organizationId: req.organizationId },
+      'spreadsheet'
+    );
+    if (!wiki) return res.status(404).json({ message: 'Artículo no encontrado' });
+    res.json({ spreadsheet: wiki.spreadsheet || null });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
+router.patch('/:id/spreadsheet', spreadsheetBodyParser, async (req, res) => {
+  try {
+    const { snapshot } = req.body;
+    const wiki = await Wiki.findOneAndUpdate(
+      { _id: req.params.id, organizationId: req.organizationId },
+      { spreadsheet: snapshot ?? null },
+      { new: true, select: '_id updatedAt' }
+    );
+    if (!wiki) return res.status(404).json({ message: 'Artículo no encontrado' });
+    res.json({ success: true, updatedAt: wiki.updatedAt });
   } catch (err) {
     res.status(400).json({ message: err.message });
   }

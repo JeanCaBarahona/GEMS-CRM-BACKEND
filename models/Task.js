@@ -193,7 +193,19 @@ const TaskSchema = new mongoose.Schema({
     default: null,
     index: true
   },
-  
+
+  // Vinculación con Casos y artículos de Wiki (el frontend ya intentaba guardar
+  // esto vía PUT /api/tasks/:id, pero el campo no existía en el schema y
+  // Mongoose lo descartaba en silencio con strict:true)
+  linkedCases: [{
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Case'
+  }],
+  linkedWikiArticles: [{
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Wiki'
+  }],
+
   // Comentarios y actividad
   comments: [{
     userId: {

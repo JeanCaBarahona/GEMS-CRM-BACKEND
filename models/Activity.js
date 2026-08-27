@@ -22,6 +22,9 @@ const ActivitySchema = new mongoose.Schema({
   dueDate: { type: Date },
   estimatedTime: { type: String }, // Ej: "2 horas", "30 minutos"
   taskId: { type: String }, // ✅ ID de la tarea del board asociada (para sincronización)
+  // Vinculación con Casos y artículos de Wiki
+  linkedCases: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Case' }],
+  linkedWikiArticles: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Wiki' }],
   completionPercentage: { type: Number, default: 0, min: 0, max: 100 },
   timeSpent: { type: Number, default: 0 }, // En segundos
   activeSessions: [{

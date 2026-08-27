@@ -37,7 +37,29 @@ const wikiSchema = new mongoose.Schema({
   linkedTickets: [{
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Ticket'
-  }]
+  }],
+  linkedTasks: [{
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Task'
+  }],
+  linkedActivities: [{
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Activity'
+  }],
+
+  // Enlaces externos (Google Drive, OneDrive, etc.) — sin subir el archivo al servidor
+  enlacesExternos: [{
+    nombre: String,
+    url: String,
+    agregadoPor: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    fecha: { type: Date, default: Date.now }
+  }],
+
+  // Snapshot JSON de la hoja de cálculo embebida (Univer IWorkbookData)
+  spreadsheet: {
+    type: mongoose.Schema.Types.Mixed,
+    default: null
+  }
 }, {
   timestamps: true
 });
