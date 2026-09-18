@@ -1,10 +1,13 @@
 const nodemailer = require('nodemailer');
 
 // URL del frontend para enlaces en emails. FRONTEND_URL no está configurada en
-// Render (confirmado con las variables de entorno de producción), así que sin
-// este fallback los enlaces de verificación apuntaban a localhost en producción.
+// Render, así que sin este fallback los enlaces apuntaban a localhost en
+// producción. El dominio real donde la gente tiene sesión iniciada es
+// customercrm.customertouchcr.com (Azure); crm.gemsinnovations.com (GitHub
+// Pages) también está desplegado pero no es el que se usa — un enlace ahí
+// manda al login en vez de abrir la actividad.
 function getFrontendUrl() {
-  return process.env.FRONTEND_URL || 'https://crm.gemsinnovations.com';
+  return process.env.FRONTEND_URL || 'https://customercrm.customertouchcr.com';
 }
 
 // ─── Transporter ─────────────────────────────────────────────────────────────
@@ -20,6 +23,12 @@ function getTransporter() {
         user: process.env.SMTP_USER,
         pass: process.env.SMTP_PASS,
       },
+      // El default de nodemailer es 2 min por intento (visto en producción como
+      // un timeout de conexión bloqueada); con esto un puerto bloqueado falla
+      // en 10s en vez de colgar la petición y acumular conexiones lentas.
+      connectionTimeout: 10000,
+      greetingTimeout: 10000,
+      socketTimeout: 10000,
     });
   }
   return transporter;
