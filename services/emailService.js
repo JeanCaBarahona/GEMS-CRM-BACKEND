@@ -1,5 +1,12 @@
 const nodemailer = require('nodemailer');
 
+// URL del frontend para enlaces en emails. FRONTEND_URL no está configurada en
+// Render (confirmado con las variables de entorno de producción), así que sin
+// este fallback los enlaces de verificación apuntaban a localhost en producción.
+function getFrontendUrl() {
+  return process.env.FRONTEND_URL || 'https://crm.gemsinnovations.com';
+}
+
 // ─── Transporter ─────────────────────────────────────────────────────────────
 let transporter = null;
 
@@ -216,8 +223,7 @@ async function notifySLAAlert(ticket) {
 
 async function sendVerificationEmail(user, token, req) {
   // Use frontend URL for the verification link
-  const baseUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
-  const verifyUrl = `${baseUrl}/verify-email?token=${token}`;
+  const verifyUrl = `${getFrontendUrl()}/verify-email?token=${token}`;
 
   return await sendMail({
     to: user.email,
@@ -263,9 +269,10 @@ async function sendVerificationEmail(user, token, req) {
   });
 }
 
-module.exports = { 
-  sendMail, 
-  notifyTicketCreated, 
+module.exports = {
+  sendMail,
+  getFrontendUrl,
+  notifyTicketCreated,
   notifyStatusChanged,
   notifyNewComment,
   notifySLAAlert,

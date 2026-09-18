@@ -113,4 +113,69 @@ function initSlaCron() {
   console.log('✅ Cron para SLA Alerts inicializado');
 }
 
-module.exports = { initTaskReportsCron, initTeamReportsCron, initSlaCron };
+// ═══════════════════════════════════════════════════════════════════════════
+// Vencimientos de Actividades (email + campanita) — solo módulo Actividades,
+// no aplica a Soporte/Tickets (tiene su propio SLA arriba) ni al tablero Kanban.
+// ═══════════════════════════════════════════════════════════════════════════
+const DUE_SOON_WINDOW_MS = 24 * 60 * 60 * 1000; // avisar cuando falten <= 24h
+const ACTIVE_STATUSES = ['pending', 'in-progress']; // completed/cancelled/overdue quedan fuera
+
+function formatDueDateEs(date) {
+  try {
+    return new Date(date).toLocaleString('es-CR', {
+      day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit'
+    });
+  } catch {
+    return String(date);
+  }
+}
+
+function initActivityDueDateCron() {
+  console.log('🔄 Inicializando cron de vencimientos de actividades...');
+
+  cron.schedule('*/30 * * * *', async () => {
+    try {
+      const Activity = require('../models/Activity');
+      const { notifyActivityDueDate } = require('./notificationHelpers');
+
+      const now = new Date();
+      const soonThreshold = new Date(now.getTime() + DUE_SOON_WINDOW_MS);
+
+      // Por vencer: dentro de las próximas 24h, sin avisar aún
+      const dueSoon = await Activity.find({
+        dueDate: { $gte: now, $lte: soonThreshold },
+        status: { $in: ACTIVE_STATUSES },
+        dueSoonNotified: { $ne: true }
+      }).populate('assignedTo', 'name email');
+
+      for (const activity of dueSoon) {
+        await notifyActivityDueDate({ activity, kind: 'due-soon', dueDateLabel: formatDueDateEs(activity.dueDate) });
+        activity.dueSoonNotified = true;
+        await activity.save();
+      }
+
+      // Vencidas: fecha límite ya pasada, sin avisar aún
+      const overdue = await Activity.find({
+        dueDate: { $lt: now },
+        status: { $in: ACTIVE_STATUSES },
+        overdueNotified: { $ne: true }
+      }).populate('assignedTo', 'name email');
+
+      for (const activity of overdue) {
+        await notifyActivityDueDate({ activity, kind: 'overdue', dueDateLabel: formatDueDateEs(activity.dueDate) });
+        activity.overdueNotified = true;
+        await activity.save();
+      }
+
+      if (dueSoon.length || overdue.length) {
+        console.log(`[Vencimientos] ${dueSoon.length} por vencer, ${overdue.length} vencidas — avisadas`);
+      }
+    } catch (err) {
+      console.error('[Vencimientos] Error revisando actividades:', err);
+    }
+  });
+
+  console.log('✅ Cron de vencimientos de actividades inicializado');
+}
+
+module.exports = { initTaskReportsCron, initTeamReportsCron, initSlaCron, initActivityDueDateCron };

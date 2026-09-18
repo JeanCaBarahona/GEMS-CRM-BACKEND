@@ -21,6 +21,10 @@ const ActivitySchema = new mongoose.Schema({
     default: 'medium' 
   },
   dueDate: { type: Date },
+  // Evitan reenviar el mismo recordatorio de vencimiento en cada corrida del cron.
+  // Se resetean a false cuando dueDate cambia (ver PUT /:id).
+  dueSoonNotified: { type: Boolean, default: false },
+  overdueNotified: { type: Boolean, default: false },
   estimatedTime: { type: String }, // Ej: "2 horas", "30 minutos"
   taskId: { type: String }, // ✅ ID de la tarea del board asociada (para sincronización)
   // Vinculación con Casos y artículos de Wiki

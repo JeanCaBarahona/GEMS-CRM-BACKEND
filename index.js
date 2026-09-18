@@ -242,10 +242,11 @@ db.once('open', async () => {
   await ensureDefaultRoles();
 
   // Inicializar servicios de cron
-  const { initTaskReportsCron, initTeamReportsCron, initSlaCron } = require('./services/cronService');
+  const { initTaskReportsCron, initTeamReportsCron, initSlaCron, initActivityDueDateCron } = require('./services/cronService');
   initTaskReportsCron(app);
   initTeamReportsCron(app);
   initSlaCron();
+  initActivityDueDateCron();
 });
 
 // Socket.IO con autenticación obligatoria + scope por organización (ver socket/index.js)

@@ -10,7 +10,10 @@ const { notifyMentions, notifyAssignment, notifyComment } = require('../services
 const { HISTORY_POPULATE, commentSnippet, applyTrackedUpdates } = require('../services/historyService');
 
 // Campos que no se registran como cambio en el historial: internos o con registro propio.
-const UNTRACKED_FIELDS = new Set(['updatedAt', 'comments', 'activeSessions', 'timeSpent', 'taskId']);
+const UNTRACKED_FIELDS = new Set([
+  'updatedAt', 'comments', 'activeSessions', 'timeSpent', 'taskId',
+  'dueSoonNotified', 'overdueNotified'
+]);
 
 // Campos cuyo valor no se guarda en el historial (solo que cambiaron), por tamaño.
 const VALUELESS_FIELDS = new Set(['description']);
@@ -174,10 +177,21 @@ router.put('/:id', async (req, res) => {
       return res.status(404).json({ error: 'Actividad no encontrada' });
     }
 
+    const previousDueDate = activity.dueDate ? activity.dueDate.getTime() : null;
+
     await applyTrackedUpdates(activity, req.body, userId, {
       untracked: UNTRACKED_FIELDS,
       valueless: VALUELESS_FIELDS
     });
+
+    // Si la fecha límite cambió, vuelve a avisar cuando corresponda en vez de
+    // quedarse callado por haber avisado sobre la fecha anterior.
+    const newDueDate = activity.dueDate ? activity.dueDate.getTime() : null;
+    if (previousDueDate !== newDueDate) {
+      activity.dueSoonNotified = false;
+      activity.overdueNotified = false;
+    }
+
     // Como el findByIdAndUpdate anterior: no revalidar campos que no se tocaron
     await activity.save({ validateModifiedOnly: true });
 
