@@ -34,6 +34,7 @@ async function getTransporter() {
       } catch (e) {
         console.warn('[Email] No se pudo resolver IPv4 de', host, '— se usa el hostname tal cual:', e.message);
       }
+      console.log('[Email] Transporter SMTP:', connectHost, ':', process.env.SMTP_PORT, '(servername:', host, ')');
 
       return nodemailer.createTransport({
         host: connectHost,
@@ -82,7 +83,7 @@ async function sendMail({ to, subject, html, text }) {
     console.log('[Email] Sent to', to, '| messageId:', info.messageId);
     return info;
   } catch (err) {
-    console.error('[Email] Error sending to', to, '–', err.message);
+    console.error('[Email] Error sending to', to, '–', err.code || '', err.message);
     return null;
   }
 }
