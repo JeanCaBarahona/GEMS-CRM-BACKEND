@@ -57,17 +57,55 @@ async function getTransporter() {
   return transporterPromise;
 }
 
+// ─── Resend (HTTP, puerto 443 — no lo bloquea ningún firewall de salida) ──────
+// SMTP directo a Gmail está bloqueado desde Render (confirmado: timeout tanto
+// por IPv4 como IPv6, en dos puertos distintos — no es un problema de config,
+// es la red). Si RESEND_API_KEY está definida, todo el correo pasa por acá en
+// vez de por SMTP; si no está definida, sendMail() sigue usando SMTP tal cual
+// (para no romper nada mientras se decide/prueba el cambio).
+async function sendViaResend({ to, subject, html, text }) {
+  // Sin dominio propio verificado en Resend, "onboarding@resend.dev" es la
+  // única dirección que Resend deja usar como remitente — sirve para arrancar
+  // hoy; una vez se verifique customertouchcr.com, poner RESEND_FROM con esa
+  // dirección (no hace falta tocar código).
+  const from = process.env.RESEND_FROM || 'CRM Soporte <onboarding@resend.dev>';
+  try {
+    const res = await fetch('https://api.resend.com/emails', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${process.env.RESEND_API_KEY}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ from, to, subject, html, text })
+    });
+    const data = await res.json().catch(() => null);
+    if (!res.ok) {
+      console.error('[Email] Resend rechazó el envío a', to, '| HTTP', res.status, '-', JSON.stringify(data));
+      return null;
+    }
+    console.log('[Email] Sent to', to, '| Resend id:', data?.id);
+    return { messageId: data?.id };
+  } catch (err) {
+    console.error('[Email] Resend: fallo la petición a', to, '-', err.message);
+    return null;
+  }
+}
+
 // ─── Core helper ─────────────────────────────────────────────────────────────
 async function sendMail({ to, subject, html, text }) {
+  if (process.env.RESEND_API_KEY) {
+    return sendViaResend({ to, subject, html, text });
+  }
+
   const host = process.env.SMTP_HOST;
   const user = process.env.SMTP_USER;
   const pass = process.env.SMTP_PASS;
 
   if (!host || !user || !pass) {
-    console.warn('[Email] Skipping: Missing config:', { 
-      host: host ? 'OK' : 'MISSING', 
-      user: user ? 'OK' : 'MISSING', 
-      pass: pass ? 'OK' : 'MISSING' 
+    console.warn('[Email] Skipping: Missing config:', {
+      host: host ? 'OK' : 'MISSING',
+      user: user ? 'OK' : 'MISSING',
+      pass: pass ? 'OK' : 'MISSING'
     });
     return null;
   }
