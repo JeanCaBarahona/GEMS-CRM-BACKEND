@@ -245,8 +245,14 @@ const TaskSchema = new mongoose.Schema({
     }
   }],
   
-  // Historial de cambios
+  // Historial de acciones sobre la tarea
   history: [{
+    // created | updated | moved | comment_added | comment_edited | comment_deleted | attachment_added
+    // Las entradas anteriores a este campo no lo tienen y se leen como 'updated'.
+    action: {
+      type: String,
+      default: 'updated'
+    },
     field: String,
     oldValue: mongoose.Schema.Types.Mixed,
     newValue: mongoose.Schema.Types.Mixed,
@@ -319,9 +325,19 @@ TaskSchema.methods.updateGitHubInfo = function(githubData) {
   return this.save();
 };
 
-TaskSchema.methods.logChange = function(field, oldValue, newValue, userId) {
+TaskSchema.methods.logChange = function(field, oldValue, newValue, userId, action = 'updated') {
   this.history.push({
+    action,
     field,
+    oldValue,
+    newValue,
+    changedBy: userId
+  });
+};
+
+TaskSchema.methods.logAction = function(action, userId, { oldValue, newValue } = {}) {
+  this.history.push({
+    action,
     oldValue,
     newValue,
     changedBy: userId

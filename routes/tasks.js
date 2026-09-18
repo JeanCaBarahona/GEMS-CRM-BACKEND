@@ -3,8 +3,10 @@ const router = express.Router();
 const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
+const mongoose = require('mongoose');
 const Task = require('../models/Task');
 const Board = require('../models/Board');
+const User = require('../models/User');
 const { authenticateToken } = require('../middleware/auth');
 const { notifyMentions, notifyAssignment, notifyComment } = require('../services/notificationHelpers');
 
@@ -30,6 +32,70 @@ const taskCommentImageUpload = multer({
     cb(null, true);
   }
 });
+
+// ==================== HISTORIAL ====================
+
+// Campos que el PUT nunca debe sobrescribir: identidad, tenant, autoría y el propio historial.
+const PROTECTED_FIELDS = ['_id', '__v', 'organizationId', 'createdBy', 'createdAt', 'history'];
+
+// Campos que no se registran como cambio: internos, derivados o con registro propio.
+const UNTRACKED_FIELDS = new Set([
+  'updatedAt', 'comments', 'attachments', 'activeSessions', 'timeLogs',
+  'remainingHours', 'completedDate'
+]);
+
+// Campos cuyo valor no se guarda en el historial (solo que cambiaron), por tamaño.
+const VALUELESS_FIELDS = new Set(['description', 'acceptanceCriteria', 'github']);
+
+const COMMENT_SNIPPET_LENGTH = 140;
+
+// Lleva un valor a una forma comparable y serializable: ids y fechas como string,
+// vacíos como null y subdocumentos sin su _id (se regenera al reasignarlos).
+function normalizeHistoryValue(value) {
+  if (value === undefined || value === null || value === '') return null;
+  if (value instanceof Date) return value.toISOString();
+  if (value instanceof mongoose.Types.ObjectId) return value.toString();
+  if (Array.isArray(value)) {
+    const items = value.map(normalizeHistoryValue).filter(v => v !== null);
+    return items.length ? items : null;
+  }
+  if (typeof value === 'object') {
+    const plain = typeof value.toObject === 'function' ? value.toObject() : value;
+    const normalized = {};
+    for (const key of Object.keys(plain).sort()) {
+      if (key === '_id') continue;
+      const v = normalizeHistoryValue(plain[key]);
+      if (v !== null) normalized[key] = v;
+    }
+    return Object.keys(normalized).length ? normalized : null;
+  }
+  return value;
+}
+
+// Para asignaciones se guardan también los nombres, así el historial sigue siendo
+// legible aunque el usuario cambie de nombre o deje la organización.
+async function describeUsers(ids) {
+  if (!ids) return null;
+  const users = await User.find({ _id: { $in: ids } }).select('name').lean();
+  const names = new Map(users.map(u => [String(u._id), u.name]));
+  return ids.map(id => ({ _id: id, name: names.get(String(id)) || null }));
+}
+
+function commentSnippet(text) {
+  const clean = (text || '').toString().trim();
+  return clean.length > COMMENT_SNIPPET_LENGTH ? `${clean.slice(0, COMMENT_SNIPPET_LENGTH)}…` : clean;
+}
+
+// Populate común de las respuestas que devuelven la tarea completa (detalle y mutaciones),
+// para que el frontend pueda reemplazar la tarea sin perder nombres.
+function populateTaskDetail(task) {
+  return task.populate([
+    { path: 'assignedTo', select: 'name email photo role department' },
+    { path: 'createdBy', select: 'name email photo' },
+    { path: 'comments.userId', select: 'name email photo' },
+    { path: 'history.changedBy', select: 'name email photo' }
+  ]);
+}
 
 // Aplicar autenticación a todas las rutas
 router.use(authenticateToken);
@@ -68,7 +134,6 @@ router.get('/', async (req, res) => {
 
     // Filtro por departamento del usuario asignado
     if (department) {
-      const User = require('../models/User');
       const usersInDept = await User.find({ department }).select('_id');
       const userIds = usersInDept.map(u => u._id);
       
@@ -151,12 +216,13 @@ router.get('/:id', async (req, res) => {
       .populate('comments.userId', 'name email photo')
       .populate('attachments.uploadedBy', 'name email photo')
       .populate('activeSessions.userId', 'name email photo')
-      .populate('timeLogs.userId', 'name email photo');
-    
+      .populate('timeLogs.userId', 'name email photo')
+      .populate('history.changedBy', 'name email photo');
+
     if (!task) {
       return res.status(404).json({ error: 'Tarea no encontrada' });
     }
-    
+
     res.json(task);
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -189,10 +255,12 @@ router.post('/', async (req, res) => {
     };
 
     const task = new Task(taskData);
+    // El historial solo lo escribe el servidor
+    task.history = [];
+    task.logAction('created', userId);
     await task.save();
 
-    await task.populate('assignedTo', 'name email photo role');
-    await task.populate('createdBy', 'name email photo');
+    await populateTaskDetail(task);
 
     // Notificación: asignación al crear tarea
     notifyAssignment({
@@ -219,21 +287,34 @@ router.put('/:id', async (req, res) => {
       return res.status(404).json({ error: 'Tarea no encontrada' });
     }
     
-    // Registrar cambios en el historial
-    const changedFields = Object.keys(req.body);
-    changedFields.forEach(field => {
-      if (task[field] !== req.body[field]) {
-        task.logChange(field, task[field], req.body[field], userId);
+    const updates = { ...req.body };
+    PROTECTED_FIELDS.forEach(field => delete updates[field]);
+
+    // Se compara contra los valores ya casteados por Mongoose (ObjectId, Date, arrays),
+    // no contra el body crudo, para no registrar cambios que no ocurrieron.
+    const before = task.toObject({ depopulate: true });
+    Object.assign(task, updates);
+    const after = task.toObject({ depopulate: true });
+
+    for (const field of Object.keys(updates)) {
+      if (UNTRACKED_FIELDS.has(field)) continue;
+      const oldValue = normalizeHistoryValue(before[field]);
+      const newValue = normalizeHistoryValue(after[field]);
+      if (JSON.stringify(oldValue) === JSON.stringify(newValue)) continue;
+
+      if (VALUELESS_FIELDS.has(field)) {
+        task.logChange(field, undefined, undefined, userId);
+      } else if (field === 'assignedTo') {
+        const [oldUsers, newUsers] = await Promise.all([describeUsers(oldValue), describeUsers(newValue)]);
+        task.logChange(field, oldUsers, newUsers, userId);
+      } else {
+        task.logChange(field, oldValue, newValue, userId);
       }
-    });
-    
-    // Actualizar campos
-    Object.assign(task, req.body);
+    }
+
     await task.save();
-    
-    await task.populate('assignedTo', 'name email photo role');
-    await task.populate('createdBy', 'name email photo');
-    
+    await populateTaskDetail(task);
+
     res.json(task);
   } catch (error) {
     res.status(400).json({ error: error.message });
@@ -252,7 +333,9 @@ router.patch('/:id/move', async (req, res) => {
       return res.status(404).json({ error: 'Tarea no encontrada' });
     }
     
-    task.logChange('boardStatus', task.boardStatus, boardStatus, userId);
+    if (task.boardStatus !== boardStatus) {
+      task.logChange('boardStatus', task.boardStatus, boardStatus, userId, 'moved');
+    }
     task.boardStatus = boardStatus;
     
     // Si se mueve a done, marcar como completada y DETENER TIMERS
@@ -281,9 +364,10 @@ router.patch('/:id/move', async (req, res) => {
         task.activeSessions = [];
       }
     }
-    
+
     await task.save();
-    
+    await populateTaskDetail(task);
+
     res.json(task);
   } catch (error) {
     res.status(400).json({ error: error.message });
@@ -312,10 +396,10 @@ router.post('/:id/comments', taskCommentImageUpload.array('images', 10), async (
       name: f.originalname
     }));
 
+    task.logAction('comment_added', userId, { newValue: commentSnippet(text) });
     await task.addComment(userId, text, images);
-    await task.populate('comments.userId', 'name email photo');
 
-    // Notificaciones: menciones + comentario para el asignado
+    // Notificaciones (antes del populate: esperan task.assignedTo como ids): menciones + comentario para el asignado
     notifyMentions({
       text,
       entityType: 'task',
@@ -332,6 +416,7 @@ router.post('/:id/comments', taskCommentImageUpload.array('images', 10), async (
       snippet: (text || '').slice(0, 80)
     });
 
+    await populateTaskDetail(task);
     res.json(task);
   } catch (error) {
     res.status(400).json({ error: error.message });
@@ -354,9 +439,13 @@ router.put('/:id/comments/:commentId', async (req, res) => {
       return res.status(403).json({ error: 'Solo el autor puede editar su comentario' });
     }
 
+    task.logAction('comment_edited', userId, {
+      oldValue: commentSnippet(comment.text),
+      newValue: commentSnippet(text)
+    });
     comment.text = text;
     await task.save();
-    await task.populate('comments.userId', 'name email photo');
+    await populateTaskDetail(task);
 
     res.json(task);
   } catch (error) {
@@ -379,9 +468,10 @@ router.delete('/:id/comments/:commentId', async (req, res) => {
       return res.status(403).json({ error: 'Solo el autor puede eliminar su comentario' });
     }
 
+    task.logAction('comment_deleted', userId, { oldValue: commentSnippet(comment.text) });
     task.comments.pull(req.params.commentId);
     await task.save();
-    await task.populate('comments.userId', 'name email photo');
+    await populateTaskDetail(task);
 
     res.json(task);
   } catch (error) {
@@ -404,8 +494,10 @@ router.post('/:id/attachments', async (req, res) => {
       return res.status(404).json({ error: 'Tarea no encontrada' });
     }
     
+    task.logAction('attachment_added', userId, { newValue: attachmentData.name || null });
     await task.addAttachment(attachmentData);
-    
+    await populateTaskDetail(task);
+
     res.json(task);
   } catch (error) {
     res.status(400).json({ error: error.message });
