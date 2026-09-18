@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const historyPlugin = require('./plugins/history');
 
 const ActivitySchema = new mongoose.Schema({
   organizationId: { type: mongoose.Schema.Types.ObjectId, ref: 'Organization', required: true, index: true },
@@ -41,6 +42,9 @@ const ActivitySchema = new mongoose.Schema({
   createdAt: { type: Date, default: Date.now },
   updatedAt: { type: Date, default: Date.now }
 });
+
+// Historial de acciones (history, logChange, logAction)
+ActivitySchema.plugin(historyPlugin);
 
 // Middleware para actualizar updatedAt en cada modificación
 ActivitySchema.pre('save', function(next) {

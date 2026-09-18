@@ -7,6 +7,13 @@ const Activity = require('../models/Activity');
 const User = require('../models/User');
 const { authenticateToken } = require('../middleware/auth');
 const { notifyMentions, notifyAssignment, notifyComment } = require('../services/notificationHelpers');
+const { HISTORY_POPULATE, commentSnippet, applyTrackedUpdates } = require('../services/historyService');
+
+// Campos que no se registran como cambio en el historial: internos o con registro propio.
+const UNTRACKED_FIELDS = new Set(['updatedAt', 'comments', 'activeSessions', 'timeSpent', 'taskId']);
+
+// Campos cuyo valor no se guarda en el historial (solo que cambiaron), por tamaño.
+const VALUELESS_FIELDS = new Set(['description']);
 
 // Configuración de multer para imágenes de comentarios
 const commentsUploadDir = path.join(__dirname, '..', 'uploads', 'activity-comments');
@@ -37,7 +44,13 @@ router.post('/', authenticateToken, async (req, res) => {
   console.log('📝 [ACTIVITIES] Datos recibidos:', JSON.stringify(req.body, null, 2));
 
   try {
+    const userId = req.user?._id || req.user?.id;
     const activity = new Activity(req.body);
+    // El autor es quien hace la petición, no lo que mande el cliente
+    if (userId) activity.createdBy = userId;
+    // El historial solo lo escribe el servidor
+    activity.history = [];
+    activity.logAction('created', userId);
     await activity.save();
 
     // Notificación: asignación al crear la actividad
@@ -75,6 +88,7 @@ router.get('/mine', async (req, res) => {
       return res.status(401).json({ error: 'No autenticado' });
     }
     const activities = await Activity.find({ assignedTo: { $in: [userId] }, status: 'pending' })
+      .select('-history')
       .populate('clientId', 'name email company')
       .populate('assignedTo', 'name email role photo avatar')
       .populate('createdBy', 'name email')
@@ -100,6 +114,7 @@ router.get('/', async (req, res) => {
     }
 
     const activities = await Activity.find(filter)
+      .select('-history')
       .populate('clientId', 'name email company')
       .populate('assignedTo', 'name email role photo avatar')
       .populate('createdBy', 'name email')
@@ -119,7 +134,8 @@ router.get('/:id', async (req, res) => {
       .populate('clientId', 'name email company')
       .populate('assignedTo', 'name email role photo avatar')
       .populate('createdBy', 'name email')
-      .populate('comments.userId', 'name email photo');
+      .populate('comments.userId', 'name email photo')
+      .populate(HISTORY_POPULATE);
 
     if (!activity) {
       return res.status(404).json({ error: 'Actividad no encontrada' });
@@ -135,6 +151,7 @@ router.get('/assigned/:userId', async (req, res) => {
   try {
     console.log('[API] Buscando actividades para assignedTo:', req.params.userId);
     const activities = await Activity.find({ assignedTo: { $in: [req.params.userId] } })
+      .select('-history')
       .populate('clientId', 'name email company')
       .populate('assignedTo', 'name email role photo avatar')
       .populate('createdBy', 'name email')
@@ -150,20 +167,28 @@ router.get('/assigned/:userId', async (req, res) => {
 // Actualizar actividad
 router.put('/:id', async (req, res) => {
   try {
-    const activity = await Activity.findByIdAndUpdate(
-      req.params.id, 
-      { ...req.body, updatedAt: new Date() }, 
-      { new: true }
-    )
-      .populate('clientId', 'name email company')
-      .populate('assignedTo', 'name email role photo avatar')
-      .populate('createdBy', 'name email');
-    
+    const userId = req.user?._id || req.user?.id;
+    const activity = await Activity.findOne({ _id: req.params.id, organizationId: req.organizationId });
+
     if (!activity) {
       return res.status(404).json({ error: 'Actividad no encontrada' });
     }
-    
-    res.json(activity);
+
+    await applyTrackedUpdates(activity, req.body, userId, {
+      untracked: UNTRACKED_FIELDS,
+      valueless: VALUELESS_FIELDS
+    });
+    // Como el findByIdAndUpdate anterior: no revalidar campos que no se tocaron
+    await activity.save({ validateModifiedOnly: true });
+
+    const populated = await Activity.findById(activity._id)
+      .populate('clientId', 'name email company')
+      .populate('assignedTo', 'name email role photo avatar')
+      .populate('createdBy', 'name email')
+      .populate('comments.userId', 'name email photo')
+      .populate(HISTORY_POPULATE);
+
+    res.json(populated);
   } catch (error) {
     res.status(400).json({ error: error.message });
   }
@@ -179,7 +204,7 @@ router.patch('/:id/status', async (req, res) => {
       return res.status(404).json({ error: 'Actividad no encontrada' });
     }
 
-    activity.status = status;
+    await applyTrackedUpdates(activity, { status }, req.user?._id || req.user?.id);
     activity.updatedAt = new Date();
 
     // Si se marca como completada, detener todas las sesiones activas
@@ -222,18 +247,18 @@ router.patch('/:id/assign', authenticateToken, async (req, res) => {
       }
     }
 
-    const activity = await Activity.findByIdAndUpdate(
-      req.params.id,
-      { assignedTo, updatedAt: new Date() },
-      { new: true }
-    )
+    const existing = await Activity.findOne({ _id: req.params.id, organizationId: req.organizationId });
+    if (!existing) {
+      return res.status(404).json({ error: 'Actividad no encontrada' });
+    }
+
+    await applyTrackedUpdates(existing, { assignedTo }, req.user?._id || req.user?.id);
+    await existing.save({ validateModifiedOnly: true });
+
+    const activity = await Activity.findById(existing._id)
       .populate('clientId', 'name email company')
       .populate('assignedTo', 'name email role photo avatar')
       .populate('createdBy', 'name email');
-    
-    if (!activity) {
-      return res.status(404).json({ error: 'Actividad no encontrada' });
-    }
 
     // Notificar nueva asignación
     notifyAssignment({
@@ -254,16 +279,16 @@ router.patch('/:id/assign', authenticateToken, async (req, res) => {
 router.patch('/:id/progress', async (req, res) => {
   try {
     const { completionPercentage } = req.body;
-    const activity = await Activity.findByIdAndUpdate(
-      req.params.id,
-      { completionPercentage, updatedAt: new Date() },
-      { new: true }
-    )
+    const existing = await Activity.findOne({ _id: req.params.id, organizationId: req.organizationId });
+    if (!existing) return res.status(404).json({ error: 'Actividad no encontrada' });
+
+    await applyTrackedUpdates(existing, { completionPercentage }, req.user?._id || req.user?.id);
+    await existing.save({ validateModifiedOnly: true });
+
+    const activity = await Activity.findById(existing._id)
       .populate('clientId', 'name email company')
       .populate('assignedTo', 'name email role photo avatar')
       .populate('createdBy', 'name email');
-    
-    if (!activity) return res.status(404).json({ error: 'Actividad no encontrada' });
     res.json(activity);
   } catch (error) {
     res.status(400).json({ error: error.message });
@@ -353,6 +378,7 @@ router.post(
         name: f.originalname
       }));
 
+      activity.logAction('comment_added', userId, { newValue: commentSnippet(text) });
       activity.comments.push({ userId, text, images, createdAt: new Date() });
       await activity.save();
 
@@ -377,7 +403,8 @@ router.post(
         .populate('clientId', 'name email company')
         .populate('assignedTo', 'name email role photo phone avatar')
         .populate('createdBy', 'name email')
-        .populate('comments.userId', 'name email photo');
+        .populate('comments.userId', 'name email photo')
+        .populate(HISTORY_POPULATE);
 
       res.json(populated);
     } catch (error) {
@@ -403,6 +430,10 @@ router.put('/:id/comments/:commentId', authenticateToken, async (req, res) => {
       return res.status(403).json({ error: 'Solo el autor puede editar su comentario' });
     }
 
+    activity.logAction('comment_edited', userId, {
+      oldValue: commentSnippet(comment.text),
+      newValue: commentSnippet(text)
+    });
     comment.text = text;
     await activity.save();
 
@@ -410,7 +441,8 @@ router.put('/:id/comments/:commentId', authenticateToken, async (req, res) => {
       .populate('clientId', 'name email company')
       .populate('assignedTo', 'name email role photo phone avatar')
       .populate('createdBy', 'name email')
-      .populate('comments.userId', 'name email photo');
+      .populate('comments.userId', 'name email photo')
+      .populate(HISTORY_POPULATE);
 
     res.json(populated);
   } catch (error) {
@@ -434,6 +466,7 @@ router.delete('/:id/comments/:commentId', authenticateToken, async (req, res) =>
       return res.status(403).json({ error: 'Solo el autor puede eliminar su comentario' });
     }
 
+    activity.logAction('comment_deleted', userId, { oldValue: commentSnippet(comment.text) });
     activity.comments.pull(req.params.commentId);
     await activity.save();
 
@@ -441,7 +474,8 @@ router.delete('/:id/comments/:commentId', authenticateToken, async (req, res) =>
       .populate('clientId', 'name email company')
       .populate('assignedTo', 'name email role photo phone avatar')
       .populate('createdBy', 'name email')
-      .populate('comments.userId', 'name email photo');
+      .populate('comments.userId', 'name email photo')
+      .populate(HISTORY_POPULATE);
 
     res.json(populated);
   } catch (error) {

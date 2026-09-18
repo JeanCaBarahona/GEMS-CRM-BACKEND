@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const historyPlugin = require('./plugins/history');
 
 const TaskSchema = new mongoose.Schema({
   organizationId: { type: mongoose.Schema.Types.ObjectId, ref: 'Organization', required: true, index: true },
@@ -245,27 +246,6 @@ const TaskSchema = new mongoose.Schema({
     }
   }],
   
-  // Historial de acciones sobre la tarea
-  history: [{
-    // created | updated | moved | comment_added | comment_edited | comment_deleted | attachment_added
-    // Las entradas anteriores a este campo no lo tienen y se leen como 'updated'.
-    action: {
-      type: String,
-      default: 'updated'
-    },
-    field: String,
-    oldValue: mongoose.Schema.Types.Mixed,
-    newValue: mongoose.Schema.Types.Mixed,
-    changedBy: { 
-      type: mongoose.Schema.Types.ObjectId, 
-      ref: 'User'
-    },
-    changedAt: { 
-      type: Date, 
-      default: Date.now 
-    }
-  }],
-  
   // Metadatos
   createdAt: { 
     type: Date, 
@@ -276,6 +256,9 @@ const TaskSchema = new mongoose.Schema({
     default: Date.now 
   }
 });
+
+// Historial de acciones (history, logChange, logAction)
+TaskSchema.plugin(historyPlugin);
 
 // Índices para mejorar rendimiento
 TaskSchema.index({ status: 1, boardStatus: 1 });
@@ -323,25 +306,6 @@ TaskSchema.methods.addAttachment = function(attachmentData) {
 TaskSchema.methods.updateGitHubInfo = function(githubData) {
   this.github = { ...this.github.toObject(), ...githubData, lastSync: new Date() };
   return this.save();
-};
-
-TaskSchema.methods.logChange = function(field, oldValue, newValue, userId, action = 'updated') {
-  this.history.push({
-    action,
-    field,
-    oldValue,
-    newValue,
-    changedBy: userId
-  });
-};
-
-TaskSchema.methods.logAction = function(action, userId, { oldValue, newValue } = {}) {
-  this.history.push({
-    action,
-    oldValue,
-    newValue,
-    changedBy: userId
-  });
 };
 
 // Métodos estáticos

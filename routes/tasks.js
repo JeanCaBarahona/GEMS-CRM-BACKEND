@@ -3,12 +3,12 @@ const router = express.Router();
 const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
-const mongoose = require('mongoose');
 const Task = require('../models/Task');
 const Board = require('../models/Board');
 const User = require('../models/User');
 const { authenticateToken } = require('../middleware/auth');
 const { notifyMentions, notifyAssignment, notifyComment } = require('../services/notificationHelpers');
+const { HISTORY_POPULATE, commentSnippet, applyTrackedUpdates } = require('../services/historyService');
 
 // Configuración de multer para imágenes de comentarios en tareas
 const taskCommentsUploadDir = path.join(__dirname, '..', 'uploads', 'task-comments');
@@ -35,9 +35,6 @@ const taskCommentImageUpload = multer({
 
 // ==================== HISTORIAL ====================
 
-// Campos que el PUT nunca debe sobrescribir: identidad, tenant, autoría y el propio historial.
-const PROTECTED_FIELDS = ['_id', '__v', 'organizationId', 'createdBy', 'createdAt', 'history'];
-
 // Campos que no se registran como cambio: internos, derivados o con registro propio.
 const UNTRACKED_FIELDS = new Set([
   'updatedAt', 'comments', 'attachments', 'activeSessions', 'timeLogs',
@@ -47,45 +44,6 @@ const UNTRACKED_FIELDS = new Set([
 // Campos cuyo valor no se guarda en el historial (solo que cambiaron), por tamaño.
 const VALUELESS_FIELDS = new Set(['description', 'acceptanceCriteria', 'github']);
 
-const COMMENT_SNIPPET_LENGTH = 140;
-
-// Lleva un valor a una forma comparable y serializable: ids y fechas como string,
-// vacíos como null y subdocumentos sin su _id (se regenera al reasignarlos).
-function normalizeHistoryValue(value) {
-  if (value === undefined || value === null || value === '') return null;
-  if (value instanceof Date) return value.toISOString();
-  if (value instanceof mongoose.Types.ObjectId) return value.toString();
-  if (Array.isArray(value)) {
-    const items = value.map(normalizeHistoryValue).filter(v => v !== null);
-    return items.length ? items : null;
-  }
-  if (typeof value === 'object') {
-    const plain = typeof value.toObject === 'function' ? value.toObject() : value;
-    const normalized = {};
-    for (const key of Object.keys(plain).sort()) {
-      if (key === '_id') continue;
-      const v = normalizeHistoryValue(plain[key]);
-      if (v !== null) normalized[key] = v;
-    }
-    return Object.keys(normalized).length ? normalized : null;
-  }
-  return value;
-}
-
-// Para asignaciones se guardan también los nombres, así el historial sigue siendo
-// legible aunque el usuario cambie de nombre o deje la organización.
-async function describeUsers(ids) {
-  if (!ids) return null;
-  const users = await User.find({ _id: { $in: ids } }).select('name').lean();
-  const names = new Map(users.map(u => [String(u._id), u.name]));
-  return ids.map(id => ({ _id: id, name: names.get(String(id)) || null }));
-}
-
-function commentSnippet(text) {
-  const clean = (text || '').toString().trim();
-  return clean.length > COMMENT_SNIPPET_LENGTH ? `${clean.slice(0, COMMENT_SNIPPET_LENGTH)}…` : clean;
-}
-
 // Populate común de las respuestas que devuelven la tarea completa (detalle y mutaciones),
 // para que el frontend pueda reemplazar la tarea sin perder nombres.
 function populateTaskDetail(task) {
@@ -93,7 +51,7 @@ function populateTaskDetail(task) {
     { path: 'assignedTo', select: 'name email photo role department' },
     { path: 'createdBy', select: 'name email photo' },
     { path: 'comments.userId', select: 'name email photo' },
-    { path: 'history.changedBy', select: 'name email photo' }
+    HISTORY_POPULATE
   ]);
 }
 
@@ -217,7 +175,7 @@ router.get('/:id', async (req, res) => {
       .populate('attachments.uploadedBy', 'name email photo')
       .populate('activeSessions.userId', 'name email photo')
       .populate('timeLogs.userId', 'name email photo')
-      .populate('history.changedBy', 'name email photo');
+      .populate(HISTORY_POPULATE);
 
     if (!task) {
       return res.status(404).json({ error: 'Tarea no encontrada' });
@@ -287,30 +245,10 @@ router.put('/:id', async (req, res) => {
       return res.status(404).json({ error: 'Tarea no encontrada' });
     }
     
-    const updates = { ...req.body };
-    PROTECTED_FIELDS.forEach(field => delete updates[field]);
-
-    // Se compara contra los valores ya casteados por Mongoose (ObjectId, Date, arrays),
-    // no contra el body crudo, para no registrar cambios que no ocurrieron.
-    const before = task.toObject({ depopulate: true });
-    Object.assign(task, updates);
-    const after = task.toObject({ depopulate: true });
-
-    for (const field of Object.keys(updates)) {
-      if (UNTRACKED_FIELDS.has(field)) continue;
-      const oldValue = normalizeHistoryValue(before[field]);
-      const newValue = normalizeHistoryValue(after[field]);
-      if (JSON.stringify(oldValue) === JSON.stringify(newValue)) continue;
-
-      if (VALUELESS_FIELDS.has(field)) {
-        task.logChange(field, undefined, undefined, userId);
-      } else if (field === 'assignedTo') {
-        const [oldUsers, newUsers] = await Promise.all([describeUsers(oldValue), describeUsers(newValue)]);
-        task.logChange(field, oldUsers, newUsers, userId);
-      } else {
-        task.logChange(field, oldValue, newValue, userId);
-      }
-    }
+    await applyTrackedUpdates(task, req.body, userId, {
+      untracked: UNTRACKED_FIELDS,
+      valueless: VALUELESS_FIELDS
+    });
 
     await task.save();
     await populateTaskDetail(task);
