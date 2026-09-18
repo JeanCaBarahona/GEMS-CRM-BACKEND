@@ -1,4 +1,7 @@
 const nodemailer = require('nodemailer');
+const dns = require('dns');
+const { promisify } = require('util');
+const dnsLookup = promisify(dns.lookup);
 
 // URL del frontend para enlaces en emails. FRONTEND_URL no está configurada en
 // Render, así que sin este fallback los enlaces apuntaban a localhost en
@@ -11,27 +14,46 @@ function getFrontendUrl() {
 }
 
 // ─── Transporter ─────────────────────────────────────────────────────────────
-let transporter = null;
+let transporterPromise = null;
 
-function getTransporter() {
-  if (!transporter) {
-    transporter = nodemailer.createTransport({
-      host: process.env.SMTP_HOST,
-      port: parseInt(process.env.SMTP_PORT || '587', 10),
-      secure: process.env.SMTP_SECURE === 'true',
-      auth: {
-        user: process.env.SMTP_USER,
-        pass: process.env.SMTP_PASS,
-      },
-      // El default de nodemailer es 2 min por intento (visto en producción como
-      // un timeout de conexión bloqueada); con esto un puerto bloqueado falla
-      // en 10s en vez de colgar la petición y acumular conexiones lentas.
-      connectionTimeout: 10000,
-      greetingTimeout: 10000,
-      socketTimeout: 10000,
-    });
+async function getTransporter() {
+  if (!transporterPromise) {
+    transporterPromise = (async () => {
+      const host = process.env.SMTP_HOST;
+
+      // Render no tiene salida por IPv6 (confirmado en logs de producción:
+      // "connect ENETUNREACH" a una dirección 2607:f8b0:... de Gmail), pero
+      // smtp.gmail.com resuelve tanto a IPv4 como IPv6 y el sistema a veces
+      // prefiere la IPv6. Se resuelve explícitamente a IPv4 y se conecta por
+      // IP; el hostname real se pasa en tls.servername para que el SNI y la
+      // verificación del certificado sigan siendo contra smtp.gmail.com.
+      let connectHost = host;
+      try {
+        const { address } = await dnsLookup(host, { family: 4 });
+        connectHost = address;
+      } catch (e) {
+        console.warn('[Email] No se pudo resolver IPv4 de', host, '— se usa el hostname tal cual:', e.message);
+      }
+
+      return nodemailer.createTransport({
+        host: connectHost,
+        port: parseInt(process.env.SMTP_PORT || '587', 10),
+        secure: process.env.SMTP_SECURE === 'true',
+        auth: {
+          user: process.env.SMTP_USER,
+          pass: process.env.SMTP_PASS,
+        },
+        tls: { servername: host },
+        // El default de nodemailer es 2 min por intento (visto en producción
+        // como un timeout de conexión bloqueada); con esto un puerto
+        // bloqueado falla en 10s en vez de colgar la petición.
+        connectionTimeout: 10000,
+        greetingTimeout: 10000,
+        socketTimeout: 10000,
+      });
+    })();
   }
-  return transporter;
+  return transporterPromise;
 }
 
 // ─── Core helper ─────────────────────────────────────────────────────────────
@@ -49,7 +71,8 @@ async function sendMail({ to, subject, html, text }) {
     return null;
   }
   try {
-    const info = await getTransporter().sendMail({
+    const transporter = await getTransporter();
+    const info = await transporter.sendMail({
       from: process.env.EMAIL_FROM || `"CRM Soporte" <${process.env.SMTP_USER}>`,
       to,
       subject,
