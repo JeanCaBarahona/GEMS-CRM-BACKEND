@@ -14,6 +14,29 @@ const ActivitySchema = new mongoose.Schema({
   clientId: { type: mongoose.Schema.Types.ObjectId, ref: 'Client' },
   // Proyecto del cliente en el que se trabajó (subdocumento de Client.projects)
   projectId: { type: mongoose.Schema.Types.ObjectId, default: null, index: true },
+  // El formulario ya enviaba el tipo, pero sin este campo Mongoose lo descartaba.
+  type: {
+    type: String,
+    enum: ['task', 'bug', 'feature', 'user-story'],
+    default: 'task'
+  },
+  // Feature (otra Activity de type 'feature' del mismo proyecto) a la que
+  // pertenece esta tarea — arma la cascada Proyecto → Feature → Tarea del Backlog.
+  featureId: { type: mongoose.Schema.Types.ObjectId, ref: 'Activity', default: null, index: true },
+  acceptanceCriteria: { type: String, default: '' },
+  environment: {
+    type: String,
+    enum: ['development', 'testing', 'production', null],
+    default: null
+  },
+  attachments: [{
+    name: String,
+    url: String,
+    mimetype: String,
+    size: Number,
+    uploadedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    uploadedAt: { type: Date, default: Date.now }
+  }],
   assignedTo: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }], // Referencia a múltiples miembros del equipo
   priority: { 
     type: String, 

@@ -12,11 +12,51 @@ const { HISTORY_POPULATE, commentSnippet, applyTrackedUpdates } = require('../se
 // Campos que no se registran como cambio en el historial: internos o con registro propio.
 const UNTRACKED_FIELDS = new Set([
   'updatedAt', 'comments', 'activeSessions', 'timeSpent', 'taskId',
-  'dueSoonNotified', 'overdueNotified'
+  'dueSoonNotified', 'overdueNotified', 'attachments'
 ]);
 
 // Campos cuyo valor no se guarda en el historial (solo que cambiaron), por tamaño.
-const VALUELESS_FIELDS = new Set(['description']);
+const VALUELESS_FIELDS = new Set(['description', 'acceptanceCriteria']);
+
+// Los selects del formulario mandan '' cuando no hay valor; para un ObjectId o
+// un enum eso es un error de validación, así que se normaliza a null. Una
+// feature no puede colgar de otra feature (la cascada es Feature → Tarea).
+function normalizeActivityBody(body) {
+  const clean = { ...body };
+  for (const field of ['featureId', 'environment', 'projectId']) {
+    if (clean[field] === '') clean[field] = null;
+  }
+  if (clean.type === 'feature') clean.featureId = null;
+  return clean;
+}
+
+// Adjuntos de actividades: mismo patrón de disco que los comentarios y los
+// archivos de proyecto (carpeta uploads servida estáticamente).
+const attachmentsUploadDir = path.join(__dirname, '..', 'uploads', 'activity-attachments');
+if (!fs.existsSync(attachmentsUploadDir)) {
+  fs.mkdirSync(attachmentsUploadDir, { recursive: true });
+}
+const attachmentUpload = multer({
+  storage: multer.diskStorage({
+    destination: (req, file, cb) => cb(null, attachmentsUploadDir),
+    filename: (req, file, cb) => {
+      const ext = path.extname(file.originalname).toLowerCase();
+      cb(null, `attachment-${Date.now()}-${Math.round(Math.random() * 1e9)}${ext}`);
+    }
+  }),
+  limits: { fileSize: 10 * 1024 * 1024 } // 10 MB por archivo
+});
+
+// Populate del detalle completo (GET /:id y respuestas de mutaciones del modal)
+function populateActivityDetail(query) {
+  return query
+    .populate('clientId', 'name email company')
+    .populate('assignedTo', 'name email role photo avatar')
+    .populate('createdBy', 'name email')
+    .populate('comments.userId', 'name email photo')
+    .populate('attachments.uploadedBy', 'name email')
+    .populate(HISTORY_POPULATE);
+}
 
 // Configuración de multer para imágenes de comentarios
 const commentsUploadDir = path.join(__dirname, '..', 'uploads', 'activity-comments');
@@ -48,7 +88,7 @@ router.post('/', authenticateToken, async (req, res) => {
 
   try {
     const userId = req.user?._id || req.user?.id;
-    const activity = new Activity(req.body);
+    const activity = new Activity(normalizeActivityBody(req.body));
     // El autor es quien hace la petición, no lo que mande el cliente
     if (userId) activity.createdBy = userId;
     // El historial solo lo escribe el servidor
@@ -105,7 +145,7 @@ router.get('/mine', async (req, res) => {
 // Obtener todas las actividades
 router.get('/', async (req, res) => {
   try {
-    const { assignedTo, status } = req.query;
+    const { assignedTo, status, projectId, type } = req.query;
 
     // Construir filtros
     let filter = {};
@@ -114,6 +154,12 @@ router.get('/', async (req, res) => {
     }
     if (status) {
       filter.status = status;
+    }
+    if (projectId) {
+      filter.projectId = projectId;
+    }
+    if (type) {
+      filter.type = type;
     }
 
     const activities = await Activity.find(filter)
@@ -133,12 +179,9 @@ router.get('/', async (req, res) => {
 // Obtener actividad por ID (con comentarios poblados)
 router.get('/:id', async (req, res) => {
   try {
-    const activity = await Activity.findOne({ _id: req.params.id, organizationId: req.organizationId })
-      .populate('clientId', 'name email company')
-      .populate('assignedTo', 'name email role photo avatar')
-      .populate('createdBy', 'name email')
-      .populate('comments.userId', 'name email photo')
-      .populate(HISTORY_POPULATE);
+    const activity = await populateActivityDetail(
+      Activity.findOne({ _id: req.params.id, organizationId: req.organizationId })
+    );
 
     if (!activity) {
       return res.status(404).json({ error: 'Actividad no encontrada' });
@@ -179,7 +222,11 @@ router.put('/:id', async (req, res) => {
 
     const previousDueDate = activity.dueDate ? activity.dueDate.getTime() : null;
 
-    await applyTrackedUpdates(activity, req.body, userId, {
+    const updates = normalizeActivityBody(req.body);
+    // Un cambio de tipo a feature también suelta la feature padre que tuviera
+    if ((updates.type ?? activity.type) === 'feature') updates.featureId = null;
+
+    await applyTrackedUpdates(activity, updates, userId, {
       untracked: UNTRACKED_FIELDS,
       valueless: VALUELESS_FIELDS
     });
@@ -195,12 +242,7 @@ router.put('/:id', async (req, res) => {
     // Como el findByIdAndUpdate anterior: no revalidar campos que no se tocaron
     await activity.save({ validateModifiedOnly: true });
 
-    const populated = await Activity.findById(activity._id)
-      .populate('clientId', 'name email company')
-      .populate('assignedTo', 'name email role photo avatar')
-      .populate('createdBy', 'name email')
-      .populate('comments.userId', 'name email photo')
-      .populate(HISTORY_POPULATE);
+    const populated = await populateActivityDetail(Activity.findById(activity._id));
 
     res.json(populated);
   } catch (error) {
@@ -357,7 +399,65 @@ router.delete('/:id', async (req, res) => {
     if (!activity) {
       return res.status(404).json({ error: 'Actividad no encontrada' });
     }
+    // Al borrar una feature, sus tareas no se borran: quedan "Sin feature"
+    if (activity.type === 'feature') {
+      await Activity.updateMany(
+        { featureId: activity._id, organizationId: req.organizationId },
+        { $set: { featureId: null } }
+      );
+    }
     res.json({ success: true });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ==================== ADJUNTOS ====================
+
+router.post('/:id/attachments', authenticateToken, attachmentUpload.array('files', 10), async (req, res) => {
+  try {
+    const userId = req.user?._id || req.user?.id;
+    const files = req.files || [];
+    if (files.length === 0) return res.status(400).json({ error: 'No se recibió ningún archivo' });
+
+    const activity = await Activity.findOne({ _id: req.params.id, organizationId: req.organizationId });
+    if (!activity) return res.status(404).json({ error: 'Actividad no encontrada' });
+
+    const host = `${req.protocol}://${req.get('host')}`;
+    for (const f of files) {
+      activity.attachments.push({
+        name: f.originalname,
+        url: `${host}/uploads/activity-attachments/${f.filename}`,
+        mimetype: f.mimetype,
+        size: f.size,
+        uploadedBy: userId,
+        uploadedAt: new Date()
+      });
+      activity.logAction('attachment_added', userId, { newValue: f.originalname });
+    }
+    await activity.save({ validateModifiedOnly: true });
+
+    res.json(await populateActivityDetail(Activity.findById(activity._id)));
+  } catch (error) {
+    console.error('Error subiendo adjuntos de actividad:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+router.delete('/:id/attachments/:attachmentId', authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user?._id || req.user?.id;
+    const activity = await Activity.findOne({ _id: req.params.id, organizationId: req.organizationId });
+    if (!activity) return res.status(404).json({ error: 'Actividad no encontrada' });
+
+    const attachment = activity.attachments.id(req.params.attachmentId);
+    if (!attachment) return res.status(404).json({ error: 'Adjunto no encontrado' });
+
+    activity.logAction('attachment_deleted', userId, { oldValue: attachment.name });
+    activity.attachments.pull(req.params.attachmentId);
+    await activity.save({ validateModifiedOnly: true });
+
+    res.json(await populateActivityDetail(Activity.findById(activity._id)));
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -413,12 +513,7 @@ router.post(
         snippet: text.slice(0, 80)
       });
 
-      const populated = await Activity.findById(activity._id)
-        .populate('clientId', 'name email company')
-        .populate('assignedTo', 'name email role photo phone avatar')
-        .populate('createdBy', 'name email')
-        .populate('comments.userId', 'name email photo')
-        .populate(HISTORY_POPULATE);
+      const populated = await populateActivityDetail(Activity.findById(activity._id));
 
       res.json(populated);
     } catch (error) {
@@ -451,12 +546,7 @@ router.put('/:id/comments/:commentId', authenticateToken, async (req, res) => {
     comment.text = text;
     await activity.save();
 
-    const populated = await Activity.findById(activity._id)
-      .populate('clientId', 'name email company')
-      .populate('assignedTo', 'name email role photo phone avatar')
-      .populate('createdBy', 'name email')
-      .populate('comments.userId', 'name email photo')
-      .populate(HISTORY_POPULATE);
+    const populated = await populateActivityDetail(Activity.findById(activity._id));
 
     res.json(populated);
   } catch (error) {
@@ -484,12 +574,7 @@ router.delete('/:id/comments/:commentId', authenticateToken, async (req, res) =>
     activity.comments.pull(req.params.commentId);
     await activity.save();
 
-    const populated = await Activity.findById(activity._id)
-      .populate('clientId', 'name email company')
-      .populate('assignedTo', 'name email role photo phone avatar')
-      .populate('createdBy', 'name email')
-      .populate('comments.userId', 'name email photo')
-      .populate(HISTORY_POPULATE);
+    const populated = await populateActivityDetail(Activity.findById(activity._id));
 
     res.json(populated);
   } catch (error) {
