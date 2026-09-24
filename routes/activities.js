@@ -55,9 +55,9 @@ function populateActivityDetail(query) {
   return query
     .populate('clientId', 'name email company')
     .populate('assignedTo', 'name email role photo avatar')
-    .populate('createdBy', 'name email')
+    .populate('createdBy', 'name email photo')
     .populate('comments.userId', 'name email photo')
-    .populate('attachments.uploadedBy', 'name email')
+    .populate('attachments.uploadedBy', 'name email photo')
     .populate(HISTORY_POPULATE);
 }
 
@@ -115,7 +115,7 @@ router.post('/', authenticateToken, async (req, res) => {
     const populatedActivity = await Activity.findById(activity._id)
       .populate('clientId', 'name email company')
       .populate('assignedTo', 'name email role photo phone avatar')
-      .populate('createdBy', 'name email');
+      .populate('createdBy', 'name email photo');
 
     console.log('✅ [ACTIVITIES] Actividad creada exitosamente');
     res.json(populatedActivity);
@@ -137,7 +137,7 @@ router.get('/mine', async (req, res) => {
       .select(LIST_EXCLUDE)
       .populate('clientId', 'name email company')
       .populate('assignedTo', 'name email role photo avatar')
-      .populate('createdBy', 'name email')
+      .populate('createdBy', 'name email photo')
       .sort({ dueDate: 1 });
     res.json(activities);
   } catch (error) {
@@ -169,7 +169,7 @@ router.get('/', async (req, res) => {
       .select(LIST_EXCLUDE)
       .populate('clientId', 'name email company')
       .populate('assignedTo', 'name email role photo avatar')
-      .populate('createdBy', 'name email')
+      .populate('createdBy', 'name email photo')
       .populate('comments.userId', 'name email photo')
       .sort({ createdAt: -1 });
 
@@ -203,7 +203,7 @@ router.get('/assigned/:userId', async (req, res) => {
       .select(LIST_EXCLUDE)
       .populate('clientId', 'name email company')
       .populate('assignedTo', 'name email role photo avatar')
-      .populate('createdBy', 'name email')
+      .populate('createdBy', 'name email photo')
       .sort({ dueDate: 1 });
     console.log('[API] Actividades encontradas:', activities.length);
     res.json(activities);
@@ -285,7 +285,7 @@ router.patch('/:id/status', async (req, res) => {
     const populated = await Activity.findById(activity._id)
       .populate('clientId', 'name email company')
       .populate('assignedTo', 'name email role photo avatar')
-      .populate('createdBy', 'name email');
+      .populate('createdBy', 'name email photo');
 
     res.json(populated);
   } catch (error) {
@@ -317,7 +317,7 @@ router.patch('/:id/assign', authenticateToken, async (req, res) => {
     const activity = await Activity.findById(existing._id)
       .populate('clientId', 'name email company')
       .populate('assignedTo', 'name email role photo avatar')
-      .populate('createdBy', 'name email');
+      .populate('createdBy', 'name email photo');
 
     // Notificar nueva asignación
     notifyAssignment({
@@ -347,7 +347,7 @@ router.patch('/:id/progress', async (req, res) => {
     const activity = await Activity.findById(existing._id)
       .populate('clientId', 'name email company')
       .populate('assignedTo', 'name email role photo avatar')
-      .populate('createdBy', 'name email');
+      .populate('createdBy', 'name email photo');
     res.json(activity);
   } catch (error) {
     res.status(400).json({ error: error.message });
@@ -387,7 +387,7 @@ router.post('/:id/timer', async (req, res) => {
     const updatedActivity = await Activity.findById(activity._id)
       .populate('clientId', 'name email company')
       .populate('assignedTo', 'name email role photo avatar')
-      .populate('createdBy', 'name email');
+      .populate('createdBy', 'name email photo');
       
     res.json(updatedActivity);
   } catch (error) {

@@ -54,7 +54,7 @@ async function getTeamKPIs({ period = 'month', department } = {}) {
   // Obtener usuarios activos
   const userFilter = { isActive: { $ne: false } };
   if (department) userFilter.department = department;
-  const users = await User.find(userFilter).select('_id name email role department avatar').lean();
+  const users = await User.find(userFilter).select('_id name email role department avatar photo').lean();
   const userIds = users.map(u => u._id);
 
   // Actividades en el período
@@ -135,7 +135,7 @@ async function getTeamKPIs({ period = 'month', department } = {}) {
     const overdueCount = overdueActivities + overdueTasks;
 
     return {
-      user: { _id: user._id, name: user.name, email: user.email, role: user.role, department: user.department, avatar: user.avatar },
+      user: { _id: user._id, name: user.name, email: user.email, role: user.role, department: user.department, avatar: user.avatar, photo: user.photo },
       totalItems,
       totalCompleted,
       complianceRate,

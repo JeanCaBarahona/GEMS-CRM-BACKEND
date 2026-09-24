@@ -95,7 +95,7 @@ router.post('/public/:orgSlug', upload.array('files', 5), async (req, res) => {
       await ticket.save();
 
       const populated = await Ticket.findOne({ _id: ticket._id, organizationId: org._id })
-        .populate('assignedTo', 'name email avatar');
+        .populate('assignedTo', 'name email avatar photo');
 
       notifyTicketCreated(populated || ticket, assignedAgent)
         .catch(e => console.error('[Email] notifyTicketCreated:', e.message));
@@ -132,7 +132,7 @@ router.get('/', authenticateToken, async (req, res) => {
     const total = await Ticket.countDocuments(query);
     const tickets = await Ticket.find(query)
       .populate('assignedTo', 'name email avatar photo')
-      .populate('submittedBy.userId', 'name email avatar')
+      .populate('submittedBy.userId', 'name email avatar photo')
       .sort({ createdAt: -1 })
       .skip(skip)
       .limit(limit);
@@ -146,7 +146,7 @@ router.get('/', authenticateToken, async (req, res) => {
 router.get('/my', authenticateToken, async (req, res) => {
   try {
     const tickets = await Ticket.find({ organizationId: req.organizationId, assignedTo: req.user._id })
-      .populate('submittedBy.userId', 'name email avatar')
+      .populate('submittedBy.userId', 'name email avatar photo')
       .sort({ updatedAt: -1 });
     res.json({ success: true, data: tickets });
   } catch (error) {
@@ -170,7 +170,7 @@ router.get('/client-history', authenticateToken, async (req, res) => {
 
     const total = await Ticket.countDocuments(query);
     const tickets = await Ticket.find(query)
-      .populate('assignedTo', 'name email avatar position')
+      .populate('assignedTo', 'name email avatar photo position')
       .sort({ createdAt: -1 })
       .skip(skip)
       .limit(limit);
@@ -184,8 +184,8 @@ router.get('/client-history', authenticateToken, async (req, res) => {
 router.get('/:id', authenticateToken, async (req, res) => {
   try {
     const ticket = await Ticket.findOne({ _id: req.params.id, organizationId: req.organizationId })
-      .populate('assignedTo', 'name email avatar')
-      .populate('comments.author', 'name email avatar role');
+      .populate('assignedTo', 'name email avatar photo')
+      .populate('comments.author', 'name email avatar photo role');
 
     if (!ticket) return res.status(404).json({ success: false, message: 'Ticket no encontrado' });
     res.json({ success: true, data: ticket });
@@ -208,7 +208,7 @@ router.patch('/:id/status', authenticateToken, async (req, res) => {
       { _id: req.params.id, organizationId: req.organizationId },
       updateData,
       { new: true }
-    ).populate('assignedTo', 'name email avatar');
+    ).populate('assignedTo', 'name email avatar photo');
 
     if (status !== oldStatus) {
       notifyStatusChanged(updated, oldStatus, status).catch(e => console.error('[Email] notifyStatusChanged:', e.message));
@@ -236,8 +236,8 @@ router.post('/:id/comments', authenticateToken, upload.array('files', 5), async 
     await ticket.save();
 
     const populated = await Ticket.findOne({ _id: req.params.id, organizationId: req.organizationId })
-      .populate('assignedTo', 'name email')
-      .populate('comments.author', 'name email avatar role');
+      .populate('assignedTo', 'name email avatar photo')
+      .populate('comments.author', 'name email avatar photo role');
 
     const newComment = populated.comments[populated.comments.length - 1];
     notifyNewComment(populated, newComment, req.user).catch(e => console.error('[Email] notifyNewComment:', e.message));

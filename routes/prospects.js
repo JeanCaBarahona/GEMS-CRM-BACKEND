@@ -40,7 +40,7 @@ router.post('/', async (req, res) => {
 router.get('/', async (req, res) => {
   try {
     const conversations = await ProspectConversation.find({ organizationId: req.organizationId })
-      .populate('createdBy', 'name email')
+      .populate('createdBy', 'name email photo')
       .populate('ownerId', 'name email')
       .sort({ lastUpdated: -1 })
     res.json(conversations)
@@ -53,7 +53,7 @@ router.get('/', async (req, res) => {
 router.get('/:id', async (req, res) => {
   try {
     const conversation = await ProspectConversation.findOne({ _id: req.params.id, organizationId: req.organizationId })
-      .populate('createdBy', 'name email')
+      .populate('createdBy', 'name email photo')
       .populate('ownerId', 'name email')
     if (!conversation) return res.status(404).json({ error: 'No encontrada' })
     res.json(conversation)

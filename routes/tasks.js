@@ -153,7 +153,7 @@ router.get('/my-tasks', async (req, res) => {
       boardStatus: { $ne: 'done' }
     })
       .populate('assignedTo', 'name email photo')
-      .populate('createdBy', 'name email')
+      .populate('createdBy', 'name email photo')
       .sort({ priority: -1, dueDate: 1 });
     
     res.json(tasks);
