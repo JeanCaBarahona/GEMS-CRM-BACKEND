@@ -188,6 +188,8 @@ const publicWhitelist = [
   /^\/api\/health$/,
   // Verificación de email — el link llega por correo, no puede pedir token
   /^\/api\/auth\/verify-email\/[^/]+$/,
+  // Fotos de perfil servidas desde la BD — un <img> no manda el token
+  /^\/api\/avatars\/photo\/[a-f0-9]{24}$/i,
 ];
 app.use('/api', (req, res, next) => {
   if (publicWhitelist.some(rx => rx.test(req.originalUrl.split('?')[0]))) return next();

@@ -58,6 +58,14 @@ const userSchema = new mongoose.Schema({
     type: String,
     default: null
   },
+  // Foto de perfil recortada, guardada en la BD como data URL (el disco de
+  // Render se borra en cada deploy). No se selecciona por defecto: `photo`
+  // apunta a GET /api/avatars/photo/:id, que la sirve como imagen.
+  photoData: {
+    type: String,
+    default: null,
+    select: false
+  },
   phone: {
     type: String,
     default: null

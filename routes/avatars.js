@@ -220,6 +220,66 @@ router.post('/upload-photo', authenticateToken, uploadProfilePhoto.single('photo
   }
 });
 
+const PHOTO_DATA_URL = /^data:image\/(jpeg|png|webp);base64,([A-Za-z0-9+/=]+)$/;
+const MAX_PHOTO_DATA_URL_LENGTH = 700_000; // ~500 KB de imagen; el editor manda ~512px JPEG
+
+/**
+ * @route PUT /api/avatars/photo
+ * @desc Guardar la foto de perfil ya recortada en el editor (data URL en la BD)
+ * @access Private
+ */
+router.put('/photo', authenticateToken, async (req, res) => {
+  try {
+    const dataUrl = String(req.body?.dataUrl || '');
+    if (dataUrl.length > MAX_PHOTO_DATA_URL_LENGTH) {
+      return res.status(413).json({ success: false, message: 'La imagen es demasiado grande.' });
+    }
+    if (!PHOTO_DATA_URL.test(dataUrl)) {
+      return res.status(400).json({ success: false, message: 'Formato de imagen no válido (usa JPG, PNG o WebP).' });
+    }
+
+    const photo = `/api/avatars/photo/${req.user._id}?v=${Date.now()}`;
+    const updatedUser = await User.findByIdAndUpdate(
+      req.user._id,
+      { photo, photoData: dataUrl, avatar: null },
+      { new: true }
+    ).select('-password');
+    if (!updatedUser) return res.status(404).json({ success: false, message: 'Usuario no encontrado' });
+
+    res.json({
+      success: true,
+      message: 'Foto de perfil actualizada exitosamente',
+      data: { user: updatedUser.toJSON(), photo }
+    });
+  } catch (error) {
+    console.error('Error saving profile photo:', error);
+    res.status(500).json({ success: false, message: 'Error actualizando foto de perfil' });
+  }
+});
+
+/**
+ * @route GET /api/avatars/photo/:userId
+ * @desc Servir la foto de perfil guardada en la BD. Pública (un <img> no manda
+ *       el token); la URL lleva ?v= con la fecha, así que se cachea sin miedo.
+ * @access Public
+ */
+router.get('/photo/:userId', async (req, res) => {
+  try {
+    if (!/^[a-f0-9]{24}$/i.test(req.params.userId)) return res.status(404).end();
+    const user = await User.findById(req.params.userId).select('+photoData').lean();
+    const match = user?.photoData && user.photoData.match(PHOTO_DATA_URL);
+    if (!match) return res.status(404).end();
+
+    res.set('Content-Type', `image/${match[1]}`);
+    res.set('Cache-Control', 'public, max-age=31536000, immutable');
+    res.set('Cross-Origin-Resource-Policy', 'cross-origin');
+    res.send(Buffer.from(match[2], 'base64'));
+  } catch (error) {
+    console.error('Error serving profile photo:', error);
+    res.status(500).end();
+  }
+});
+
 /**
  * @route DELETE /api/avatars/photo
  * @desc Eliminar la foto de perfil personalizada del usuario
@@ -230,8 +290,8 @@ router.delete('/photo', authenticateToken, async (req, res) => {
     // Obtener usuario actual
     const user = await User.findById(req.user._id).select('photo');
     
-    // Si tiene foto, intentar eliminarla físicamente
-    if (user.photo) {
+    // Si tiene foto en disco (formato viejo), intentar eliminarla físicamente
+    if (user.photo && user.photo.startsWith('/uploads/')) {
       try {
         const photoPath = path.join(__dirname, '..', user.photo);
         if (fs.existsSync(photoPath)) {
@@ -246,7 +306,7 @@ router.delete('/photo', authenticateToken, async (req, res) => {
     // Actualizar el usuario para quitar la referencia a la foto
     const updatedUser = await User.findByIdAndUpdate(
       req.user._id,
-      { photo: null },
+      { photo: null, photoData: null },
       { new: true }
     ).select('-password');
 
