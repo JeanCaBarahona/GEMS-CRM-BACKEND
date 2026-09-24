@@ -12,7 +12,7 @@ const { HISTORY_POPULATE, commentSnippet, applyTrackedUpdates } = require('../se
 // Campos que no se registran como cambio en el historial: internos o con registro propio.
 const UNTRACKED_FIELDS = new Set([
   'updatedAt', 'comments', 'activeSessions', 'timeSpent', 'taskId',
-  'dueSoonNotified', 'overdueNotified', 'attachments'
+  'dueSoonNotified', 'overdueNotified', 'attachments', 'dailyLog'
 ]);
 
 // Campos cuyo valor no se guarda en el historial (solo que cambiaron), por tamaño.
@@ -27,25 +27,28 @@ function normalizeActivityBody(body) {
     if (clean[field] === '') clean[field] = null;
   }
   if (clean.type === 'feature') clean.featureId = null;
+  // Una recurrente no vence: sin fecha de entrega (el cron de vencimientos la ignora)
+  if (clean.type === 'recurring') clean.dueDate = null;
+  // El registro diario y los adjuntos tienen sus propias rutas
+  delete clean.dailyLog;
+  delete clean.attachments;
   return clean;
 }
 
-// Adjuntos de actividades: mismo patrón de disco que los comentarios y los
-// archivos de proyecto (carpeta uploads servida estáticamente).
-const attachmentsUploadDir = path.join(__dirname, '..', 'uploads', 'activity-attachments');
-if (!fs.existsSync(attachmentsUploadDir)) {
-  fs.mkdirSync(attachmentsUploadDir, { recursive: true });
+// Adjuntos: solo enlaces o capturas en la base (ver models/Activity.js).
+// El frontend comprime la captura antes de enviarla; este tope (≈1.5 MB en
+// base64) protege el documento, que en MongoDB no puede pasar de 16 MB.
+const MAX_IMAGE_DATA_URL_LENGTH = 2_000_000;
+const IMAGE_DATA_URL = /^data:image\/(png|jpe?g|webp|gif);base64,[A-Za-z0-9+/=]+$/;
+const HTTP_URL = /^https?:\/\/\S+$/i;
+
+// Los listados no necesitan las capturas (pesan); el detalle sí las trae.
+const LIST_EXCLUDE = '-history -attachments';
+
+// Fecha "de hoy" para el registro diario, en hora de Costa Rica (el servidor corre en UTC)
+function todayKey() {
+  return new Date().toLocaleDateString('en-CA', { timeZone: 'America/Costa_Rica' });
 }
-const attachmentUpload = multer({
-  storage: multer.diskStorage({
-    destination: (req, file, cb) => cb(null, attachmentsUploadDir),
-    filename: (req, file, cb) => {
-      const ext = path.extname(file.originalname).toLowerCase();
-      cb(null, `attachment-${Date.now()}-${Math.round(Math.random() * 1e9)}${ext}`);
-    }
-  }),
-  limits: { fileSize: 10 * 1024 * 1024 } // 10 MB por archivo
-});
 
 // Populate del detalle completo (GET /:id y respuestas de mutaciones del modal)
 function populateActivityDetail(query) {
@@ -131,7 +134,7 @@ router.get('/mine', async (req, res) => {
       return res.status(401).json({ error: 'No autenticado' });
     }
     const activities = await Activity.find({ assignedTo: { $in: [userId] }, status: 'pending' })
-      .select('-history')
+      .select(LIST_EXCLUDE)
       .populate('clientId', 'name email company')
       .populate('assignedTo', 'name email role photo avatar')
       .populate('createdBy', 'name email')
@@ -163,7 +166,7 @@ router.get('/', async (req, res) => {
     }
 
     const activities = await Activity.find(filter)
-      .select('-history')
+      .select(LIST_EXCLUDE)
       .populate('clientId', 'name email company')
       .populate('assignedTo', 'name email role photo avatar')
       .populate('createdBy', 'name email')
@@ -197,7 +200,7 @@ router.get('/assigned/:userId', async (req, res) => {
   try {
     console.log('[API] Buscando actividades para assignedTo:', req.params.userId);
     const activities = await Activity.find({ assignedTo: { $in: [req.params.userId] } })
-      .select('-history')
+      .select(LIST_EXCLUDE)
       .populate('clientId', 'name email company')
       .populate('assignedTo', 'name email role photo avatar')
       .populate('createdBy', 'name email')
@@ -414,32 +417,74 @@ router.delete('/:id', async (req, res) => {
 
 // ==================== ADJUNTOS ====================
 
-router.post('/:id/attachments', authenticateToken, attachmentUpload.array('files', 10), async (req, res) => {
+// Body: { kind: 'link', url, name? }  o  { kind: 'image', dataUrl, name? }
+router.post('/:id/attachments', authenticateToken, async (req, res) => {
   try {
     const userId = req.user?._id || req.user?.id;
-    const files = req.files || [];
-    if (files.length === 0) return res.status(400).json({ error: 'No se recibió ningún archivo' });
+    const { kind, url, dataUrl } = req.body || {};
+    const name = (req.body?.name || '').toString().trim().slice(0, 200);
+
+    let attachment;
+    if (kind === 'link') {
+      const link = (url || '').toString().trim();
+      if (!HTTP_URL.test(link) || link.length > 2000) {
+        return res.status(400).json({ error: 'El enlace debe empezar con http:// o https://' });
+      }
+      attachment = { kind: 'link', name: name || new URL(link).hostname, url: link };
+    } else if (kind === 'image') {
+      const data = (dataUrl || '').toString();
+      if (!IMAGE_DATA_URL.test(data)) {
+        return res.status(400).json({ error: 'La captura debe ser una imagen PNG, JPG, WEBP o GIF' });
+      }
+      if (data.length > MAX_IMAGE_DATA_URL_LENGTH) {
+        return res.status(413).json({ error: 'La captura es demasiado pesada (máx. ~1.5 MB)' });
+      }
+      const mimetype = data.slice(5, data.indexOf(';'));
+      attachment = { kind: 'image', name: name || 'Captura de pantalla', url: data, mimetype, size: Math.round(data.length * 0.75) };
+    } else {
+      return res.status(400).json({ error: 'Tipo de adjunto no válido (link o image)' });
+    }
 
     const activity = await Activity.findOne({ _id: req.params.id, organizationId: req.organizationId });
     if (!activity) return res.status(404).json({ error: 'Actividad no encontrada' });
 
-    const host = `${req.protocol}://${req.get('host')}`;
-    for (const f of files) {
-      activity.attachments.push({
-        name: f.originalname,
-        url: `${host}/uploads/activity-attachments/${f.filename}`,
-        mimetype: f.mimetype,
-        size: f.size,
-        uploadedBy: userId,
-        uploadedAt: new Date()
-      });
-      activity.logAction('attachment_added', userId, { newValue: f.originalname });
+    activity.attachments.push({ ...attachment, uploadedBy: userId, uploadedAt: new Date() });
+    activity.logAction('attachment_added', userId, { newValue: attachment.name });
+    await activity.save({ validateModifiedOnly: true });
+
+    res.json(await populateActivityDetail(Activity.findById(activity._id)));
+  } catch (error) {
+    console.error('Error agregando adjunto a actividad:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ==================== TAREAS RECURRENTES ====================
+
+// "+" del día: registra que la persona hizo hoy la tarea recurrente. Pulsarlo
+// de nuevo el mismo día lo deshace (por si fue un clic por error).
+router.post('/:id/daily-check', authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user?._id || req.user?.id;
+    const activity = await Activity.findOne({ _id: req.params.id, organizationId: req.organizationId });
+    if (!activity) return res.status(404).json({ error: 'Actividad no encontrada' });
+    if (activity.type !== 'recurring') {
+      return res.status(400).json({ error: 'Solo las tareas recurrentes tienen registro diario' });
+    }
+
+    const today = todayKey();
+    const existing = activity.dailyLog.find(e => e.date === today && String(e.userId) === String(userId));
+    if (existing) {
+      activity.dailyLog.pull(existing._id);
+      activity.logAction('daily_unchecked', userId, { newValue: today });
+    } else {
+      activity.dailyLog.push({ date: today, userId, at: new Date() });
+      activity.logAction('daily_checked', userId, { newValue: today });
     }
     await activity.save({ validateModifiedOnly: true });
 
     res.json(await populateActivityDetail(Activity.findById(activity._id)));
   } catch (error) {
-    console.error('Error subiendo adjuntos de actividad:', error);
     res.status(500).json({ error: error.message });
   }
 });

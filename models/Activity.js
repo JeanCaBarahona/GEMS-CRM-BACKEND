@@ -17,9 +17,16 @@ const ActivitySchema = new mongoose.Schema({
   // El formulario ya enviaba el tipo, pero sin este campo Mongoose lo descartaba.
   type: {
     type: String,
-    enum: ['task', 'bug', 'feature', 'user-story'],
+    // recurring: tarea diaria que no vence ni se completa; se registra con "+" cada día (dailyLog)
+    enum: ['task', 'bug', 'feature', 'user-story', 'recurring'],
     default: 'task'
   },
+  // Registro de la tarea recurrente: una entrada por persona y por día (fecha de Costa Rica)
+  dailyLog: [{
+    date: String, // 'YYYY-MM-DD'
+    userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    at: { type: Date, default: Date.now }
+  }],
   // Feature (otra Activity de type 'feature' del mismo proyecto) a la que
   // pertenece esta tarea — arma la cascada Proyecto → Feature → Tarea del Backlog.
   featureId: { type: mongoose.Schema.Types.ObjectId, ref: 'Activity', default: null, index: true },
@@ -29,7 +36,11 @@ const ActivitySchema = new mongoose.Schema({
     enum: ['development', 'testing', 'production', null],
     default: null
   },
+  // Adjuntos: enlaces externos (Drive, SharePoint...) o capturas de pantalla
+  // guardadas en la propia base como data URL comprimida — nada en el disco
+  // del servidor, que en Render se borra en cada despliegue.
   attachments: [{
+    kind: { type: String, enum: ['link', 'image', 'file'], default: 'link' },
     name: String,
     url: String,
     mimetype: String,

@@ -147,4 +147,48 @@ async function ensureDefaultRoles() {
   }
 }
 
-module.exports = { ensureSupportUser, ensureDefaultRoles, ensureDefaultRolesForOrg };
+// ─── Proyectos por defecto de cada cliente ──────────────────────────────────
+// Todo cliente tiene "Interno" y "Soporte" (protegidos: isDefault no se puede
+// borrar). Los clientes nuevos ya nacen con ellos (routes/clients.js); esto
+// completa los existentes. Idempotente: solo agrega lo que falta y, si ya había
+// un proyecto con ese nombre, lo marca como por defecto en vez de duplicarlo.
+const DEFAULT_CLIENT_PROJECTS = ['Interno', 'Soporte'];
+
+const normalizeName = (s) => (s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').trim().toLowerCase();
+
+async function ensureDefaultClientProjects() {
+  try {
+    const Client = require('../models/Client');
+    const clients = await Client.find().select('projects._id projects.name projects.isDefault').lean();
+    let added = 0, marked = 0;
+
+    for (const client of clients) {
+      for (const name of DEFAULT_CLIENT_PROJECTS) {
+        const existing = (client.projects || []).find(p => normalizeName(p.name) === normalizeName(name));
+        // updateOne (no save) para no revalidar datos viejos del cliente, ej. correos
+        // guardados antes de la validación de formato.
+        if (!existing) {
+          await Client.updateOne({ _id: client._id }, { $push: { projects: { name, status: 'active', isDefault: true } } });
+          added++;
+        } else if (!existing.isDefault) {
+          await Client.updateOne({ _id: client._id, 'projects._id': existing._id }, { $set: { 'projects.$.isDefault': true } });
+          marked++;
+        }
+      }
+    }
+
+    if (added || marked) {
+      console.log(`[Init] Proyectos por defecto: ${added} creados, ${marked} marcados en ${clients.length} cliente(s)`);
+    }
+  } catch (err) {
+    console.error('[Init] Error asegurando proyectos por defecto de clientes:', err.message);
+  }
+}
+
+module.exports = {
+  ensureSupportUser,
+  ensureDefaultRoles,
+  ensureDefaultRolesForOrg,
+  ensureDefaultClientProjects,
+  DEFAULT_CLIENT_PROJECTS
+};

@@ -237,9 +237,10 @@ db.once('open', async () => {
   console.log('Connected to MongoDB');
   
   // ─── One-time initialization ───
-  const { ensureSupportUser, ensureDefaultRoles } = require('./services/initService');
+  const { ensureSupportUser, ensureDefaultRoles, ensureDefaultClientProjects } = require('./services/initService');
   await ensureSupportUser();
   await ensureDefaultRoles();
+  await ensureDefaultClientProjects();
 
   // Inicializar servicios de cron
   const { initTaskReportsCron, initTeamReportsCron, initSlaCron, initActivityDueDateCron } = require('./services/cronService');
